@@ -41,7 +41,9 @@ Attention map visualization for transformers
 Installation
 bash
 # Clone the repository
+
 git clone https://github.com/W-Rogala/Portfolio/edit/main/Classical_computing/Computer_vision/Profession%20classyfication.git
+
 cd enhanced-profession-classifier
 
 # Create and activate a virtual environment
