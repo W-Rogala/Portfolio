@@ -1,0 +1,465 @@
+"""
+Model comparison and advanced visualization utilities.
+"""
+
+import os
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.manifold import TSNE
+import pandas as pd
+from collections import OrderedDict
+
+from src.data.preprocess import get_data_loaders, get_class_names
+from src.utils.metrics import evaluate_accuracy
+
+
+def load_model_from_path(model_path, model_class, device='cpu'):
+    """
+    Load a model from a path.
+    
+    Args:
+        model_path (str): Path to the model file
+        model_class (torch.nn.Module): Model class
+        device (str): Device to load the model on
+        
+    Returns:
+        torch.nn.Module: Loaded model
+    """
+    model = model_class()
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
+    model.eval()
+    return model
+
+
+def get_model_predictions(model, data_loader, device='cpu'):
+    """
+    Get predictions for a model on a dataset.
+    
+    Args:
+        model (torch.nn.Module): Model
+        data_loader (DataLoader): Data loader
+        device (str): Device to run inference on
+        
+    Returns:
+        tuple: (all_preds, all_labels, all_probs) - Predictions, true labels, and probabilities
+    """
+    model.eval()
+    all_preds = []
+    all_labels = []
+    all_probs = []
+    
+    with torch.no_grad():
+        for X, y in data_loader:
+            X, y = X.to(device), y.to(device)
+            outputs = model(X)
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            _, preds = torch.max(outputs, 1)
+            
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(y.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+    
+    return np.array(all_preds), np.array(all_labels), np.array(all_probs)
+
+
+def compare_models(model_paths, model_names, data_dir, batch_size=64, device='cpu'):
+    """
+    Compare multiple models on the same test dataset.
+    
+    Args:
+        model_paths (list): List of paths to model files
+        model_names (list): List of model names (for display)
+        data_dir (str): Directory containing the dataset
+        batch_size (int): Batch size for the data loader
+        device (str): Device to run inference on
+        
+    Returns:
+        pd.DataFrame: DataFrame with comparison results
+    """
+    # Load test data
+    _, test_loader = get_data_loaders(data_dir, batch_size=batch_size)
+    class_names = get_class_names(data_dir)
+    num_classes = len(class_names)
+    
+    # Prepare results container
+    results = []
+    
+    # Evaluate each model
+    for model_path, model_name in zip(model_paths, model_names):
+        print(f"Evaluating {model_name}...")
+        
+        try:
+            # Load model
+            from src.training.train import get_model
+            model_type = model_path.split('/')[-1].split('_')[0]
+            model = get_model(model_type, num_classes=num_classes)
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            model.to(device)
+            model.eval()
+            
+            # Get accuracy
+            accuracy = evaluate_accuracy(model, test_loader, device)
+            
+            # Get predictions
+            preds, labels, probs = get_model_predictions(model, test_loader, device)
+            
+            # Compute per-class accuracy
+            per_class_acc = {}
+            for class_idx in range(num_classes):
+                class_mask = (labels == class_idx)
+                if np.sum(class_mask) > 0:
+                    class_acc = np.mean(preds[class_mask] == labels[class_mask])
+                    per_class_acc[class_names[class_idx]] = class_acc
+            
+            # Add to results
+            results.append({
+                'Model': model_name,
+                'Accuracy': accuracy,
+                'Per-Class Accuracy': per_class_acc,
+                'Predictions': preds,
+                'Labels': labels,
+                'Probabilities': probs
+            })
+            
+            print(f"  Accuracy: {accuracy:.4f}")
+            
+        except Exception as e:
+            print(f"Error evaluating {model_name}: {e}")
+    
+    # Create DataFrame with basic results
+    df = pd.DataFrame([{
+        'Model': r['Model'],
+        'Accuracy': r['Accuracy'],
+        **{f"Accuracy ({c})": r['Per-Class Accuracy'].get(c, 0) for c in class_names.values()}
+    } for r in results])
+    
+    # Return full results and DataFrame
+    return results, df
+
+
+def plot_model_comparison(comparison_df, title="Model Comparison", save_path=None):
+    """
+    Plot model comparison results.
+    
+    Args:
+        comparison_df (pd.DataFrame): DataFrame with comparison results
+        title (str): Plot title
+        save_path (str): Path to save the plot
+    """
+    # Get columns for per-class accuracy
+    accuracy_cols = [col for col in comparison_df.columns if col.startswith('Accuracy (')]
+    class_names = [col[10:-1] for col in accuracy_cols]
+    
+    # Set up the figure
+    plt.figure(figsize=(12, 8))
+    
+    # Plot overall accuracy
+    plt.subplot(2, 1, 1)
+    sns.barplot(x='Model', y='Accuracy', data=comparison_df)
+    plt.title("Overall Accuracy")
+    plt.ylim(0.7, 1.0)  # Adjust as needed
+    plt.xticks(rotation=45)
+    
+    # Plot per-class accuracy
+    plt.subplot(2, 1, 2)
+    comparison_df_melted = pd.melt(comparison_df, 
+                                  id_vars=['Model'], 
+                                  value_vars=accuracy_cols,
+                                  var_name='Class', 
+                                  value_name='Accuracy')
+    comparison_df_melted['Class'] = comparison_df_melted['Class'].apply(lambda x: x[10:-1])
+    sns.barplot(x='Class', y='Accuracy', hue='Model', data=comparison_df_melted)
+    plt.title("Per-Class Accuracy")
+    plt.ylim(0.5, 1.0)  # Adjust as needed
+    plt.xticks(rotation=45)
+    plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
+    
+    # Adjust layout and set main title
+    plt.tight_layout()
+    plt.suptitle(title, fontsize=16, y=1.05)
+    
+    # Save plot
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+        print(f"Plot saved to {save_path}")
+    
+    plt.show()
+
+
+def visualize_model_features(model, data_loader, class_names, n_samples=500, device='cpu', save_path=None):
+    """
+    Visualize model features using t-SNE.
+    
+    Args:
+        model (torch.nn.Module): Model
+        data_loader (DataLoader): Data loader
+        class_names (dict): Dictionary mapping class indices to class names
+        n_samples (int): Number of samples to use for t-SNE
+        device (str): Device to run inference on
+        save_path (str): Path to save the plot
+    """
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Extract features function based on model type
+    def extract_features(model, x):
+        # Different logic based on model type
+        if hasattr(model, 'features'):
+            # VGG-like models
+            features = model.features(x)
+            return torch.flatten(features, 1)
+        elif hasattr(model, 'backbone') and hasattr(model.backbone, 'conv1'):
+            # ResNet-like models
+            x = model.backbone.conv1(x)
+            x = model.backbone.bn1(x)
+            x = model.backbone.relu(x)
+            x = model.backbone.maxpool(x)
+            
+            x = model.backbone.layer1(x)
+            x = model.backbone.layer2(x)
+            x = model.backbone.layer3(x)
+            x = model.backbone.layer4(x)
+            
+            x = model.backbone.avgpool(x)
+            return torch.flatten(x, 1)
+        elif hasattr(model, 'inc') and hasattr(model, 'down1'):
+            # U-Net like models
+            x1 = model.inc(x)
+            x2 = model.down1(x1)
+            x3 = model.down2(x2)
+            x4 = model.down3(x3)
+            x5 = model.down4(x4)
+            
+            return torch.flatten(x5, 1)
+        else:
+            # Generic approach for other models
+            try:
+                # Try to get the output before the classifier
+                modules = list(model.children())[:-1]
+                feature_extractor = torch.nn.Sequential(*modules)
+                x = feature_extractor(x)
+                return torch.flatten(x, 1)
+            except:
+                # Fallback: use output before softmax
+                x = model(x)
+                return x
+    
+    # Collect features and labels
+    features = []
+    labels = []
+    count = 0
+    
+    with torch.no_grad():
+        for X, y in data_loader:
+            if count >= n_samples:
+                break
+                
+            batch_size = X.size(0)
+            if count + batch_size > n_samples:
+                # Only take what we need
+                X = X[:n_samples - count]
+                y = y[:n_samples - count]
+            
+            X = X.to(device)
+            
+            # Extract features
+            batch_features = extract_features(model, X)
+            
+            # Add to list
+            features.append(batch_features.cpu().numpy())
+            labels.append(y.numpy())
+            
+            count += X.size(0)
+    
+    # Concatenate features and labels
+    features = np.concatenate(features, axis=0)
+    labels = np.concatenate(labels, axis=0)
+    
+    # Apply t-SNE
+    print("Applying t-SNE...")
+    tsne = TSNE(n_components=2, random_state=42)
+    features_tsne = tsne.fit_transform(features)
+    
+    # Plot t-SNE
+    plt.figure(figsize=(10, 8))
+    
+    for class_idx, class_name in class_names.items():
+        mask = (labels == class_idx)
+        plt.scatter(features_tsne[mask, 0], features_tsne[mask, 1], label=class_name, alpha=0.8)
+    
+    plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
+    plt.title("t-SNE Visualization of Model Features")
+    
+    # Save plot
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+        print(f"Plot saved to {save_path}")
+    
+    plt.show()
+
+
+def visualize_kan_activations(model, data_loader, device='cpu', n_samples=5, save_path=None):
+    """
+    Visualize KAN layer activations.
+    
+    Args:
+        model (torch.nn.Module): Model with KAN layers
+        data_loader (DataLoader): Data loader
+        device (str): Device to run inference on
+        n_samples (int): Number of samples to visualize
+        save_path (str): Path to save the plot
+    """
+    if not hasattr(model, 'kan_classifier'):
+        print("Model does not have KAN layers")
+        return
+    
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Get some sample data
+    images, labels = next(iter(data_loader))
+    images = images[:n_samples].to(device)
+    labels = labels[:n_samples]
+    
+    # Extract base features
+    with torch.no_grad():
+        base_features = model.base_model(images)
+    
+    # Hook for getting intermediate activations
+    activations = {}
+    
+    def hook_fn(name):
+        def hook(module, input, output):
+            activations[name] = output.detach().cpu().numpy()
+        return hook
+    
+    # Register hooks for KAN layers
+    hooks = []
+    for i, layer in enumerate(model.kan_classifier.layers):
+        hook = layer.register_forward_hook(hook_fn(f"KAN Layer {i+1}"))
+        hooks.append(hook)
+    
+    # Forward pass to get activations
+    with torch.no_grad():
+        model(images)
+    
+    # Remove hooks
+    for hook in hooks:
+        hook.remove()
+    
+    # Visualize activations
+    n_layers = len(model.kan_classifier.layers)
+    fig, axes = plt.subplots(n_samples, n_layers, figsize=(n_layers * 3, n_samples * 2.5))
+    
+    if n_samples == 1 and n_layers == 1:
+        axes = np.array([[axes]])
+    elif n_samples == 1:
+        axes = axes.reshape(1, -1)
+    elif n_layers == 1:
+        axes = axes.reshape(-1, 1)
+    
+    for i in range(n_samples):
+        for j in range(n_layers):
+            layer_name = f"KAN Layer {j+1}"
+            if layer_name in activations:
+                act = activations[layer_name][i]
+                
+                # Plot activation distribution
+                axes[i, j].hist(act, bins=30)
+                axes[i, j].set_title(f"Sample {i+1}, {layer_name}")
+                axes[i, j].set_xlabel("Activation Value")
+                axes[i, j].set_ylabel("Frequency")
+    
+    plt.tight_layout()
+    
+    # Save plot
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+        print(f"Plot saved to {save_path}")
+    
+    plt.show()
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Compare models and visualize results")
+    
+    # Data and model parameters
+    parser.add_argument('--data_dir', type=str, default='data/idenprof',
+                       help='Directory containing the dataset')
+    parser.add_argument('--models_dir', type=str, default='models',
+                      help='Directory containing saved models')
+    
+    # Visualization parameters
+    parser.add_argument('--save_dir', type=str, default='visualizations',
+                      help='Directory to save visualizations')
+    
+    # Specific visualization options
+    parser.add_argument('--compare', action='store_true',
+                      help='Compare model performance')
+    parser.add_argument('--tsne', action='store_true',
+                      help='Visualize model features with t-SNE')
+    parser.add_argument('--kan', action='store_true',
+                      help='Visualize KAN activations')
+    
+    # Device parameters
+    parser.add_argument('--no_cuda', action='store_true',
+                      help='Disable CUDA')
+    
+    args = parser.parse_args()
+    
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu')
+    
+    # Create save directory if needed
+    if args.save_dir:
+        os.makedirs(args.save_dir, exist_ok=True)
+    
+    # Get all model files
+    model_paths = [os.path.join(args.models_dir, f) for f in os.listdir(args.models_dir) 
+                  if f.endswith('.pth')]
+    model_names = [os.path.basename(p).replace('.pth', '') for p in model_paths]
+    
+    # Get class names
+    class_names = get_class_names(args.data_dir)
+    
+    # Get data loader
+    batch_size = 32
+    _, test_loader = get_data_loaders(args.data_dir, batch_size=batch_size)
+    
+    # Compare models
+    if args.compare:
+        print("Comparing models...")
+        results, df = compare_models(model_paths, model_names, args.data_dir, device=device)
+        plot_model_comparison(df, save_path=os.path.join(args.save_dir, 'model_comparison.png'))
+    
+    # Visualize model features with t-SNE
+    if args.tsne:
+        for model_path, model_name in zip(model_paths, model_names):
+            print(f"Visualizing features for {model_name}...")
+            model_type = model_path.split('_')[0]
+            model = get_model(model_type, num_classes=len(class_names))
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            model.to(device)
+            
+            save_path = os.path.join(args.save_dir, f'{model_name}_tsne.png')
+            visualize_model_features(model, test_loader, class_names, 
+                                    device=device, save_path=save_path)
+    
+    # Visualize KAN activations
+    if args.kan:
+        for model_path, model_name in zip(model_paths, model_names):
+            if 'kan' in model_name.lower():
+                print(f"Visualizing KAN activations for {model_name}...")
+                model_type = model_path.split('_')[0]
+                model = get_model(model_type, num_classes=len(class_names), use_kan=True)
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                model.to(device)
+                
+                save_path = os.path.join(args.save_dir, f'{model_name}_kan_activations.png')
+                visualize_kan_activations(model, test_loader, device=device, save_path=save_path)
