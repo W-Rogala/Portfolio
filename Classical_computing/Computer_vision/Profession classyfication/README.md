@@ -1,28 +1,33 @@
-Enhanced Profession Classifier
-A state-of-the-art computer vision project for classifying professionals into 10 different categories using advanced deep learning techniques.
+# Enhanced Profession Classifier
+A computer vision project for classifying professionals into 10 different categories using advanced deep learning techniques.
 
-Overview
+#Overview
 This project implements and compares a wide range of CNN and transformer architectures on the "idenprof" dataset which contains images of people from 10 different professions. The main focus is to evaluate different model architectures, the impact of data augmentation, hyperparameter optimization, and Kolmogorov-Arnold Networks (KAN).
 
-The 10 professions in the dataset are:
+# The 10 professions in the dataset are:
 
-Chef
-Doctor
-Engineer
-Farmer
-Firefighter
-Judge
-Mechanic
-Pilot
-Police
-Waiter
-Features
+Chef,
+Doctor,
+Engineer,
+Farmer,
+Firefighter,
+Judge,
+Mechanic,
+Pilot,
+Police,
+Waiter,
+Features,
+
 Multiple Model Architectures:
+
 Traditional CNNs: VGG-11, small VGG-11, ResNet-18
 U-Net adapted for classification
+
 Vision Transformers (ViT): Tiny, Small, and Base variants
+
 COCO pre-trained models: ResNet-50, ResNet-101, EfficientNet, Faster R-CNN
-Advanced Techniques:
+
+# Advanced Techniques:
 Data augmentation (rotation, color jittering, flipping)
 Hyperparameter optimization with Optuna
 Kolmogorov-Arnold Networks (KAN) as alternative to traditional neural networks
